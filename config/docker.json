@@ -1,0 +1,5 @@
+{
+  "keybinding": "SUPER + SHIFT + ALT + D",
+  "theme_path": "docker/omarchy-docker-theme.json",
+  "max_rows": 40
+}

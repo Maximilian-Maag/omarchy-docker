@@ -1,0 +1,573 @@
+#!/usr/bin/env python3
+"""omarchy-docker — integrate Docker with the Omarchy desktop.
+
+The applied Omarchy theme is read *live* from
+``$XDG_STATE_HOME/omarchy/current/theme/colors.toml`` (default
+``~/.local/state/omarchy/current/theme/colors.toml``) on every run. No colour
+palette is baked into this plugin, so every Omarchy theme — including one the
+user wrote themselves — renders the container view correctly.
+
+Every call to the ``docker`` CLI goes through a single injectable seam
+(:func:`docker` / :func:`default_runner`), so unit and integration tests exercise
+the real argument construction without needing a reachable Docker daemon.
+
+Subcommands:
+  status              report whether the daemon is reachable and whether this
+                      user may talk to it (the docker group)
+  list                show containers in a table coloured from the applied theme
+  start NAME          start a container
+  stop NAME           stop a container
+  restart NAME        restart a container
+  logs NAME           show a container's logs (``--tail N``)
+  exec NAME -- CMD    run a command inside a container
+  theme               render the container view's colour roles from the applied
+                      theme, to a file (``--stdout`` to print instead)
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import pathlib
+import re
+import subprocess
+import sys
+
+PLUGIN_ID = "Maximilian-Maag.docker"
+
+DEFAULT_CONFIG = {
+    "keybinding": "SUPER + SHIFT + ALT + D",
+    "theme_path": "docker/omarchy-docker-theme.json",
+    "max_rows": 40,
+}
+
+DEFAULT_TIMEOUT = 30
+RESET = "\x1b[0m"
+
+
+# ── paths ─────────────────────────────────────────────────────────────────
+
+
+def state_home() -> pathlib.Path:
+    """Omarchy's state root — where the applied theme lives."""
+    return pathlib.Path(os.environ.get("XDG_STATE_HOME") or (pathlib.Path.home() / ".local/state"))
+
+
+def config_home() -> pathlib.Path:
+    """The XDG config root."""
+    return pathlib.Path(os.environ.get("XDG_CONFIG_HOME") or (pathlib.Path.home() / ".config"))
+
+
+def plugin_dir() -> pathlib.Path:
+    """This plugin's checkout (resolves through the installed bin symlink)."""
+    return pathlib.Path(__file__).resolve().parent.parent
+
+
+def theme_colors_path() -> pathlib.Path:
+    """The applied theme's colours.toml (a copy; the name is not in the path)."""
+    return state_home() / "omarchy" / "current" / "theme" / "colors.toml"
+
+
+def theme_search_dirs() -> list[pathlib.Path]:
+    """Every installed theme directory, system-wide first then per-user."""
+    dirs: list[pathlib.Path] = []
+    for root in ("/usr/share/omarchy/themes", str(config_home() / "omarchy" / "themes")):
+        base = pathlib.Path(root)
+        if base.is_dir():
+            dirs.extend(sorted(p for p in base.iterdir() if p.is_dir()))
+    return dirs
+
+
+def load_config(path: pathlib.Path | None = None) -> dict:
+    """Read config/docker.json, falling back to the built-in defaults."""
+    path = pathlib.Path(path) if path is not None else (plugin_dir() / "config" / "docker.json")
+    data = dict(DEFAULT_CONFIG)
+    if path.is_file():
+        try:
+            data.update(json.loads(path.read_text()))
+        except ValueError:
+            pass
+    return data
+
+
+def theme_path(cfg: dict | None = None) -> pathlib.Path:
+    """Where the generated theme file is written.
+
+    An absolute or ``~``-prefixed ``theme_path`` is used as-is; a relative one is
+    resolved under the XDG config root, so the default respects
+    ``$XDG_CONFIG_HOME``.
+    """
+    cfg = cfg if cfg is not None else load_config()
+    raw = str(cfg.get("theme_path") or DEFAULT_CONFIG["theme_path"])
+    if raw.startswith("~") or raw.startswith("/"):
+        return pathlib.Path(os.path.expanduser(raw))
+    return config_home() / raw
+
+
+# ── theme parsing ─────────────────────────────────────────────────────────
+
+
+def parse_colors(text: str) -> dict:
+    """Parse an Omarchy colors.toml into a plain ``{key: value}`` dict.
+
+    Blank lines and ``#`` comments are skipped; surrounding quotes are stripped
+    from values. Hex colour values survive because only a line whose *first*
+    non-space character is ``#`` counts as a comment.
+    """
+    colors: dict[str, str] = {}
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        if "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        key = key.strip()
+        value = value.strip().strip('"').strip("'")
+        if not key:
+            continue
+        colors[key] = value
+    return colors
+
+
+def normalize_hex(value: str) -> str:
+    """Normalise an Omarchy colour value to ``#rrggbb``.
+
+    A hex value passes through; a Hyprland ``rgba(rrggbbaa)`` gradient stop is
+    reduced to its ``#rrggbb``. Anything else is an error — silently emitting a
+    bogus colour would leave a fallback rendering.
+    """
+    value = value.strip()
+    if value.startswith("#") and len(value) == 7:
+        return value
+    match = re.fullmatch(r"rgba\(([0-9a-fA-F]{6})([0-9a-fA-F]{2})\)", value)
+    if match:
+        return "#" + match.group(1)
+    raise ValueError("unsupported colour: %s" % value)
+
+
+def hex_to_rgb(value: str) -> tuple[int, int, int]:
+    """Split a colour value into its 0-255 RGB components."""
+    normalised = normalize_hex(value)
+    return (int(normalised[1:3], 16), int(normalised[3:5], 16), int(normalised[5:7], 16))
+
+
+def ansi_fg(value: str) -> str:
+    """A true-colour foreground escape sequence for a colour value."""
+    red, green, blue = hex_to_rgb(value)
+    return "\x1b[38;2;%d;%d;%dm" % (red, green, blue)
+
+
+def ansi_bg(value: str) -> str:
+    """A true-colour background escape sequence for a colour value."""
+    red, green, blue = hex_to_rgb(value)
+    return "\x1b[48;2;%d;%d;%dm" % (red, green, blue)
+
+
+def normalize_name(name: str) -> str:
+    """Omarchy theme names are Title Case; directories are lower-dashed."""
+    return name.strip().lower().replace(" ", "-")
+
+
+def resolve_theme_name(colors: dict, search_dirs: list[pathlib.Path]) -> str:
+    """Recover the applied theme's name by matching colours against the themes.
+
+    The applied theme is a *copy*, so its directory is always literally
+    ``theme`` and the name is nowhere in the path. Match the colour set against
+    each installed theme instead.
+    """
+    for directory in search_dirs:
+        candidate = directory / "colors.toml"
+        if not candidate.is_file():
+            continue
+        if parse_colors(candidate.read_text()) == colors:
+            return directory.name
+    return ""
+
+
+def _first(colors: dict, *keys: str) -> str:
+    """The first present, non-empty value among ``keys``; error if none."""
+    for key in keys:
+        value = colors.get(key)
+        if value:
+            return value
+    raise ValueError("theme is missing colour: %s" % ", ".join(keys))
+
+
+def build_theme(colors: dict) -> dict:
+    """Map an Omarchy colour map to the container view's colour roles."""
+    return {
+        "background": normalize_hex(_first(colors, "background", "base")),
+        "foreground": normalize_hex(_first(colors, "foreground", "text")),
+        "accent": normalize_hex(_first(colors, "accent", "blue")),
+        "muted": normalize_hex(_first(colors, "muted", "dark_foreground", "foreground", "text")),
+        "selection": normalize_hex(_first(colors, "selection", "lighter_background",
+                                          "background", "base")),
+        "running": normalize_hex(_first(colors, "green", "accent", "blue")),
+        "stopped": normalize_hex(_first(colors, "red", "muted", "dark_foreground",
+                                        "foreground", "text")),
+    }
+
+
+# ── the docker seam ───────────────────────────────────────────────────────
+
+
+def default_runner(argv: list[str]) -> tuple[int, str, str]:
+    """Run ``argv``, returning ``(returncode, stdout, stderr)``.
+
+    Tests replace this function so no unit test needs a running Docker daemon or
+    a real ``getent``. A failure to launch is reported as exit code 127.
+    """
+    try:
+        proc = subprocess.run(argv, capture_output=True, text=True, timeout=DEFAULT_TIMEOUT)
+    except (OSError, subprocess.SubprocessError):
+        return 127, "", "could not run: %s" % " ".join(argv)
+    return proc.returncode, proc.stdout, proc.stderr
+
+
+def system(argv: list[str], runner=None) -> tuple[int, str, str]:
+    """Run any command through the injectable runner seam."""
+    runner = runner or default_runner
+    return runner(argv)
+
+
+def docker(args: list[str], runner=None) -> tuple[int, str, str]:
+    """Run ``docker <args>`` through the injectable runner seam."""
+    return system(["docker", *args], runner)
+
+
+def daemon_reachable(runner=None) -> tuple[bool, str]:
+    """Whether the Docker daemon answers, plus a one-line detail on failure."""
+    rc, out, err = docker(["info"], runner)
+    if rc == 0:
+        return True, ""
+    detail = (err.strip() or out.strip() or "daemon not reachable").splitlines()[-1]
+    return False, detail
+
+
+# ── docker group ──────────────────────────────────────────────────────────
+
+
+def docker_group_gid(text: str) -> int | None:
+    """The gid of the ``docker`` group from ``getent group`` output, or None."""
+    for line in text.splitlines():
+        fields = line.split(":")
+        if len(fields) >= 4 and fields[0] == "docker" and fields[2].isdigit():
+            return int(fields[2])
+    return None
+
+
+def lookup_docker_gid(runner=None) -> int | None:
+    """Look up the docker group's gid via ``getent`` (through the runner seam)."""
+    rc, out, _ = system(["getent", "group", "docker"], runner)
+    if rc != 0:
+        return None
+    return docker_group_gid(out)
+
+
+def current_group_ids() -> set[int]:
+    """The group ids this process belongs to."""
+    try:
+        return set(os.getgroups())
+    except OSError:
+        return set()
+
+
+def user_in_group(gid: int | None, gids: set[int]) -> bool:
+    """Whether the user belongs to a group with the given gid."""
+    return gid is not None and gid in gids
+
+
+# ── container parsing ─────────────────────────────────────────────────────
+
+
+def parse_ps(text: str) -> list[dict]:
+    """Parse ``docker ps -a --format '{{json .}}'`` (one JSON object per line).
+
+    Lines that are blank, not JSON objects, or unparseable are skipped rather
+    than aborting the whole listing.
+    """
+    containers: list[dict] = []
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or not line.startswith("{"):
+            continue
+        try:
+            obj = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(obj, dict):
+            continue
+        containers.append(obj)
+    return containers
+
+
+def container_state(container: dict) -> str:
+    """A container's state, normalised to a lowercase word.
+
+    ``docker ps`` reports ``State`` as ``running`` / ``exited`` / ``created``;
+    older or partial output may only carry a human ``Status`` such as
+    ``Up 2 hours`` or ``Exited (0) 3 days ago``.
+    """
+    state = str(container.get("State") or "").strip().lower()
+    if state:
+        return state
+    status = str(container.get("Status") or "").strip().lower()
+    if status.startswith("up"):
+        return "running"
+    if status.startswith("exited"):
+        return "exited"
+    return "unknown"
+
+
+def is_running(container: dict) -> bool:
+    """Whether a parsed container is running."""
+    return container_state(container) == "running"
+
+
+def container_name(container: dict) -> str:
+    """A container's name (docker's json format key is ``Names``)."""
+    return str(container.get("Names") or container.get("Name") or "")
+
+
+def visible_rows(containers: list[dict], max_rows) -> list[dict]:
+    """Truncate a listing to ``max_rows`` when a truthy cap is configured."""
+    if not max_rows:
+        return containers
+    return containers[:max_rows]
+
+
+# ── rendering ─────────────────────────────────────────────────────────────
+
+
+def pad(text: str, width: int) -> str:
+    """Left-align ``text`` in a field of ``width`` characters."""
+    return text.ljust(width)
+
+
+def state_colour(state: str, theme: dict) -> str:
+    """The theme colour role a container state is painted with."""
+    if state == "running":
+        return theme["running"]
+    if state in ("exited", "dead"):
+        return theme["stopped"]
+    return theme["muted"]
+
+
+def render_table(containers: list[dict], theme: dict, color: bool = True) -> str:
+    """Render the container listing as a themed table.
+
+    Columns are NAME, IMAGE, STATE and STATUS. With ``color`` each row is painted
+    in the theme colour that matches the container's state.
+    """
+    headers = ("NAME", "IMAGE", "STATE", "STATUS")
+    rows = [
+        (container_name(c), str(c.get("Image") or ""), container_state(c),
+         str(c.get("Status") or ""))
+        for c in containers
+    ]
+    widths = [max([len(headers[index])] + [len(row[index]) for row in rows])
+              for index in range(len(headers))]
+
+    def line(cells: tuple[str, ...], colour: str | None) -> str:
+        painted: list[str] = []
+        for index, cell in enumerate(cells):
+            text = pad(cell, widths[index])
+            if colour:
+                text = ansi_fg(colour) + text + RESET
+            painted.append(text)
+        return "  ".join(painted)
+
+    lines = [line(headers, theme.get("accent") if color else None)]
+    for row in rows:
+        colour = state_colour(row[2], theme) if color else None
+        lines.append(line(row, colour))
+    return "\n".join(lines) + "\n"
+
+
+def render_status(info: dict) -> str:
+    """Render the ``status`` report from a plain info mapping."""
+    lines = ["omarchy-docker %s" % PLUGIN_ID]
+    lines.append("daemon        : %s" % ("reachable" if info["reachable"] else "unreachable"))
+    if info.get("detail"):
+        lines.append("detail        : %s" % info["detail"])
+    gid = info.get("group_gid")
+    lines.append("docker group  : %s" % ("gid %d" % gid if gid is not None else "not present"))
+    lines.append("user groups   : %s" % ("member" if info.get("in_group") else "not a member"))
+    lines.append("theme         : %s" % (info.get("theme") or "(unknown)"))
+    if not info["reachable"] and not info.get("in_group"):
+        lines.append("fix           : you cannot reach the daemon. Add yourself to the")
+        lines.append("                docker group, then log out and back in:")
+        lines.append("                  sudo usermod -aG docker $USER")
+    return "\n".join(lines)
+
+
+# ── subcommands ───────────────────────────────────────────────────────────
+
+
+def cmd_status(args) -> int:
+    runner = getattr(args, "runner", None)
+    reachable, detail = daemon_reachable(runner)
+    gid = lookup_docker_gid(runner)
+    in_group = user_in_group(gid, current_group_ids())
+    colors_path = theme_colors_path()
+    name = ""
+    if colors_path.is_file():
+        name = resolve_theme_name(parse_colors(colors_path.read_text()), theme_search_dirs())
+    info = {"reachable": reachable, "detail": detail, "group_gid": gid,
+            "in_group": in_group, "theme": name}
+    print(render_status(info))
+    return 0
+
+
+def cmd_list(args) -> int:
+    cfg = load_config(args.config)
+    runner = getattr(args, "runner", None)
+    rc, out, err = docker(["ps", "-a", "--format", "{{json .}}"], runner)
+    if rc != 0:
+        print("omarchy-docker: docker ps failed: %s"
+              % ((err.strip() or out.strip() or "daemon unreachable").splitlines()[-1]),
+              file=sys.stderr)
+        return 1
+    containers = visible_rows(parse_ps(out), cfg.get("max_rows"))
+    if not containers:
+        print("omarchy-docker: no containers")
+        return 0
+    colors_path = theme_colors_path()
+    if colors_path.is_file():
+        theme = build_theme(parse_colors(colors_path.read_text()))
+        if args.no_color:
+            color = False
+        else:
+            color = sys.stdout.isatty()
+        sys.stdout.write(render_table(containers, theme, color=color))
+    else:
+        print("omarchy-docker: no applied theme — listing without colour", file=sys.stderr)
+        sys.stdout.write(render_table(containers, {}, color=False))
+    return 0
+
+
+def _lifecycle(args, action: str) -> int:
+    runner = getattr(args, "runner", None)
+    rc, out, err = docker([action, args.name], runner)
+    if rc != 0:
+        print("omarchy-docker: %s %s failed: %s"
+              % (action, args.name, err.strip() or out.strip() or "docker returned %d" % rc),
+              file=sys.stderr)
+        return 1
+    print("omarchy-docker: %s %s: ok" % (action, args.name))
+    return 0
+
+
+def cmd_start(args) -> int:
+    return _lifecycle(args, "start")
+
+
+def cmd_stop(args) -> int:
+    return _lifecycle(args, "stop")
+
+
+def cmd_restart(args) -> int:
+    return _lifecycle(args, "restart")
+
+
+def cmd_logs(args) -> int:
+    runner = getattr(args, "runner", None)
+    argv = ["logs"]
+    if args.tail is not None:
+        argv += ["--tail", str(args.tail)]
+    argv.append(args.name)
+    rc, out, err = docker(argv, runner)
+    if out:
+        sys.stdout.write(out if out.endswith("\n") else out + "\n")
+    if err:
+        sys.stderr.write(err if err.endswith("\n") else err + "\n")
+    return 0 if rc == 0 else 1
+
+
+def cmd_exec(args) -> int:
+    runner = getattr(args, "runner", None)
+    command = list(args.cmd)
+    if command and command[0] == "--":
+        command = command[1:]
+    rc, out, err = docker(["exec", args.name, *command], runner)
+    if out:
+        sys.stdout.write(out)
+    if err:
+        sys.stderr.write(err)
+    return 0 if rc == 0 else 1
+
+
+def cmd_theme(args) -> int:
+    cfg = load_config(args.config)
+    colors_path = theme_colors_path()
+    if not colors_path.is_file():
+        print("omarchy-docker: no applied theme at %s" % colors_path, file=sys.stderr)
+        return 1
+    colors = parse_colors(colors_path.read_text())
+    payload = json.dumps(build_theme(colors), indent=2) + "\n"
+    if args.stdout:
+        sys.stdout.write(payload)
+        return 0
+    out = theme_path(cfg)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(payload)
+    print("omarchy-docker: wrote %s" % out)
+    name = resolve_theme_name(colors, theme_search_dirs())
+    if name:
+        print("omarchy-docker: applied theme: %s" % name)
+    return 0
+
+
+# ── argument parsing ──────────────────────────────────────────────────────
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(prog="omarchy-docker", description=__doc__.splitlines()[0])
+    parser.add_argument("--config", default=None,
+                        help="path to config/docker.json (default: the plugin's own)")
+    sub = parser.add_subparsers(dest="command", required=True)
+
+    status = sub.add_parser("status", help="report daemon reachability and group membership")
+    status.set_defaults(func=cmd_status)
+
+    listing = sub.add_parser("list", help="show containers in a themed table")
+    listing.add_argument("--no-color", action="store_true", help="never colourise the table")
+    listing.set_defaults(func=cmd_list)
+
+    start = sub.add_parser("start", help="start a container")
+    start.add_argument("name")
+    start.set_defaults(func=cmd_start)
+
+    stop = sub.add_parser("stop", help="stop a container")
+    stop.add_argument("name")
+    stop.set_defaults(func=cmd_stop)
+
+    restart = sub.add_parser("restart", help="restart a container")
+    restart.add_argument("name")
+    restart.set_defaults(func=cmd_restart)
+
+    logs = sub.add_parser("logs", help="show a container's logs")
+    logs.add_argument("name")
+    logs.add_argument("--tail", type=int, default=None, help="number of trailing lines")
+    logs.set_defaults(func=cmd_logs)
+
+    ex = sub.add_parser("exec", help="run a command inside a container")
+    ex.add_argument("name")
+    ex.add_argument("cmd", nargs=argparse.REMAINDER, help="command, after --")
+    ex.set_defaults(func=cmd_exec)
+
+    theme = sub.add_parser("theme", help="render the container view's colour roles")
+    theme.add_argument("--stdout", action="store_true", help="print instead of writing")
+    theme.set_defaults(func=cmd_theme)
+    return parser
+
+
+def main(argv=None) -> int:
+    args = build_parser().parse_args(argv)
+    return args.func(args)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

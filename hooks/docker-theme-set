@@ -1,0 +1,39 @@
+#!/bin/bash
+# omarchy hook: theme-set — regenerate the docker container view's colour roles.
+#
+# `omarchy hook install` copies this file into the hooks directory under its
+# BASENAME, so resolving the plugin relative to the script's own directory lands
+# in the hooks dir, NOT in this plugin. It therefore self-locates: the plugin is
+# found via $OMARCHY_DOCKER_DIR, the Omarchy plugins dir, or the dev checkout.
+set -euo pipefail
+
+THEME=$(echo "${1:-}" | tr '[:upper:]' '[:lower:]' | tr ' ' '-')
+[[ -z "$THEME" ]] && exit
+
+find_plugin() {
+  local base
+  for base in "${OMARCHY_DOCKER_DIR:-}" \
+              "${XDG_DATA_HOME:-$HOME/.local/share}/omarchy/plugins/Maximilian-Maag.docker" \
+              "$HOME/.local/share/omarchy/plugins/Maximilian-Maag.docker" \
+              "$HOME/.config/omarchy/plugins/Maximilian-Maag.docker" \
+              "$HOME/Work/omarchy-docker"; do
+    if [[ -n "$base" && -x "$base/bin/omarchy-docker" ]]; then
+      printf '%s\n' "$base"
+      return
+    fi
+  done
+  false
+}
+
+PLUGIN=""
+if found="$(find_plugin)"; then
+  PLUGIN="$found"
+fi
+if [[ -z "$PLUGIN" ]]; then
+  exit
+fi
+
+CLI="$PLUGIN/bin/omarchy-docker"
+if ! "$CLI" theme &>/dev/null; then
+  : # theme generation failed; nothing more to do
+fi

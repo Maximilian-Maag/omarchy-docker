@@ -1,0 +1,29 @@
+{
+  "schemaVersion": 1,
+  "id": "Maximilian-Maag.docker",
+  "name": "Docker",
+  "version": "0.1.0",
+  "author": "Maximilian-Maag",
+  "license": "MIT",
+  "description": "Integrates Docker with the Omarchy desktop: a themed container view (list), lifecycle commands (start/stop/restart), logs and exec, a daemon/group status check, and a Hyprland keybinding that opens the view in a floating terminal. Colours are read live from the applied theme.",
+  "kinds": [
+    "cli",
+    "hyprland-module"
+  ],
+  "activation": "auto",
+  "entryPoints": {},
+  "omarchy_meta": {
+    "installScript": "install.sh",
+    "hooks": [
+      "theme-set"
+    ],
+    "features": [
+      "Reads the applied theme live from ~/.local/state/omarchy/current/theme/colors.toml — no baked-in palette, any theme works",
+      "list renders containers in a table coloured from the applied theme (running / stopped / other)",
+      "status reports whether the Docker daemon is reachable and whether this user is in the docker group, with the exact fix when they are not",
+      "start / stop / restart / logs / exec wrap the docker CLI through one injectable seam",
+      "theme-set hook (uniquely named docker-theme-set) regenerates the colour roles on every theme change",
+      "Hyprland keybinding (Super+Shift+Alt+D) opens the container view in a floating terminal"
+    ]
+  }
+}
