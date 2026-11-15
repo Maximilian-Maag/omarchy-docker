@@ -137,6 +137,31 @@ class BindingsShape(unittest.TestCase):
         self.assertIn("docker-bindings", (ROOT / "install.sh").read_text())
 
 
+class KeybindingRenderedFromConfig(unittest.TestCase):
+    """HAZARD: config/docker.json's `keybinding` had no reader — the binding was
+    hardcoded in bin/bindings.lua and install.sh copied it verbatim, so editing
+    the config did nothing. The installed module must carry the configured value.
+    """
+
+    def test_rendered_binding_uses_the_configured_keybinding(self):
+        rendered = dock.render_bindings({"keybinding": "SUPER + SHIFT + D"})
+        self.assertIn('o.bind("SUPER + SHIFT + D", "Docker containers"', rendered)
+        self.assertIn('hl.unbind("SUPER + SHIFT + D")', rendered)
+        self.assertNotIn(dock.KEYBINDING_PLACEHOLDER, rendered)
+
+    def test_shipped_module_is_a_template(self):
+        text = (ROOT / "bin" / "bindings.lua").read_text()
+        self.assertIn(dock.KEYBINDING_PLACEHOLDER, text)
+
+    def test_install_renders_instead_of_copying_verbatim(self):
+        text = (ROOT / "install.sh").read_text()
+        self.assertIn('"$BIN_SRC" bindings', text)
+        self.assertNotIn('cp "$PLUGIN_DIR/bin/bindings.lua"', text)
+
+    def test_default_keybinding_is_used_without_config(self):
+        self.assertIn(dock.DEFAULT_CONFIG["keybinding"], dock.render_bindings({}))
+
+
 class DedicatedThemePath(unittest.TestCase):
     """HAZARD: writing the theme file over something the user owns. Ours is a
     dedicated file.

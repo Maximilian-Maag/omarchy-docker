@@ -45,6 +45,7 @@ omarchy-docker logs web --tail 50
 omarchy-docker exec web -- env                 # run a command inside a container
 omarchy-docker theme           # write ~/.config/docker/omarchy-docker-theme.json
 omarchy-docker theme --stdout  # print the colour roles instead
+omarchy-docker bindings        # render ~/.config/hypr/docker-bindings.lua from the config
 ```
 
 `list` shows NAME, IMAGE, STATE and STATUS. Rows are painted with the theme colour
@@ -67,9 +68,12 @@ machine this plugin was built on, `mmaag` is already in the `docker` group
 
 ## Keybinding
 
-`Super+Shift+Alt+D` opens the container view in a floating terminal. It lives in
-`bin/bindings.lua` and is copied to `~/.config/hypr/docker-bindings.lua`, required
-from `hyprland.lua`.
+`Super+Shift+Alt+D` opens the container view in a floating terminal. It is
+**rendered from `config/docker.json`'s `keybinding`** by `omarchy-docker bindings`
+(run by `install.sh`): `bin/bindings.lua` is a template whose placeholder the CLI
+substitutes, and the result is written to `~/.config/hypr/docker-bindings.lua` and
+required from `hyprland.lua`. Editing the config therefore changes the installed
+binding.
 
 ## Configuration
 

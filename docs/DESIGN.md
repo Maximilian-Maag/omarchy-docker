@@ -9,7 +9,8 @@ It ships a Python CLI (`bin/omarchy-docker`), a Hyprland keybinding module
 
 ```
 bin/omarchy-docker        the CLI (all logic lives here, dependency-free)
-bin/bindings.lua          Hyprland keybinding -> `omarchy-docker list` in a floating terminal
+bin/bindings.lua          Hyprland keybinding TEMPLATE (`omarchy-docker bindings` renders it
+                          from config/docker.json's keybinding into ~/.config/hypr/)
 hooks/docker-theme-set    theme-set hook: regenerate the colour roles
 config/docker.json        keybinding, theme file path, listing row cap
 ```

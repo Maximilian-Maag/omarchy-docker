@@ -621,6 +621,44 @@ class ConfigAndPaths(unittest.TestCase):
         self.assertEqual(dock.DEFAULT_CONFIG["max_rows"], 40)
 
 
+class RenderBindings(unittest.TestCase):
+    """The keybinding module is rendered from config/docker.json, not hardcoded."""
+
+    def test_uses_the_configured_keybinding(self):
+        out = dock.render_bindings({"keybinding": "SUPER + B"})
+        self.assertIn('o.bind("SUPER + B"', out)
+        self.assertIn('hl.unbind("SUPER + B")', out)
+
+    def test_substitutes_every_placeholder(self):
+        out = dock.render_bindings({"keybinding": "SUPER + B"})
+        self.assertNotIn(dock.KEYBINDING_PLACEHOLDER, out)
+
+    def test_falls_back_to_the_default(self):
+        self.assertIn(dock.DEFAULT_CONFIG["keybinding"], dock.render_bindings({}))
+
+    def test_empty_keybinding_falls_back_to_the_default(self):
+        self.assertIn(dock.DEFAULT_CONFIG["keybinding"], dock.render_bindings({"keybinding": ""}))
+
+    def test_keeps_the_module_shape(self):
+        out = dock.render_bindings({"keybinding": "SUPER + B"})
+        self.assertIn("omarchy-docker list", out)
+        self.assertIn("org.omarchy.docker", out)
+
+    def test_template_path_is_the_shipped_module(self):
+        self.assertEqual(dock.bindings_template_path(), ROOT / "bin/bindings.lua")
+
+    def test_bindings_path_is_in_hypr_config(self):
+        old = os.environ.get("XDG_CONFIG_HOME")
+        os.environ["XDG_CONFIG_HOME"] = "/tmp/cfg-xyz"
+        try:
+            self.assertEqual(dock.bindings_path(),
+                             pathlib.Path("/tmp/cfg-xyz/hypr/docker-bindings.lua"))
+        finally:
+            os.environ.pop("XDG_CONFIG_HOME", None)
+            if old is not None:
+                os.environ["XDG_CONFIG_HOME"] = old
+
+
 class Commands(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -791,6 +829,31 @@ class Commands(unittest.TestCase):
         rc, out = run_main(["--config", str(cfg), "theme"])
         self.assertEqual(rc, 0)
         self.assertTrue((pathlib.Path(self.tmp.name) / "else/theme.json").is_file())
+
+    def test_bindings_writes_the_configured_keybinding(self):
+        rc, out = run_main(["bindings"])
+        self.assertEqual(rc, 0)
+        path = dock.bindings_path()
+        self.assertTrue(path.is_file())
+        self.assertIn(dock.DEFAULT_CONFIG["keybinding"], path.read_text())
+
+    def test_bindings_honours_the_config_value(self):
+        cfg = pathlib.Path(self.tmp.name) / "docker.json"
+        cfg.write_text(json.dumps({"keybinding": "SUPER + Z"}))
+        rc, out = run_main(["--config", str(cfg), "bindings"])
+        self.assertEqual(rc, 0)
+        self.assertIn('o.bind("SUPER + Z"', dock.bindings_path().read_text())
+
+    def test_bindings_stdout_does_not_write(self):
+        rc, out = run_main(["bindings", "--stdout"])
+        self.assertEqual(rc, 0)
+        self.assertIn(dock.DEFAULT_CONFIG["keybinding"], out)
+        self.assertFalse(dock.bindings_path().exists())
+
+    def test_status_reports_the_keybinding(self):
+        rc, out = run_main(["status"], self._runner())
+        self.assertEqual(rc, 0)
+        self.assertIn(dock.DEFAULT_CONFIG["keybinding"], out)
 
 
 if __name__ == "__main__":

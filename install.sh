@@ -46,10 +46,12 @@ if command -v omarchy >/dev/null 2>&1; then
 fi
 
 # ── 6. Wire OS keybindings into Hyprland ──────────────────────────────────────
+# The binding is RENDERED from config/docker.json's "keybinding" value by the CLI
+# (`bindings`), not copied verbatim, so editing the config changes what installs.
 HYPR_CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/hypr"
 HYPR_MAIN="$HYPR_CONFIG_DIR/hyprland.lua"
 if [[ -f "$HYPR_MAIN" ]]; then
-  cp "$PLUGIN_DIR/bin/bindings.lua" "$HYPR_CONFIG_DIR/docker-bindings.lua"
+  "$BIN_SRC" bindings
   if ! grep -q "docker-bindings" "$HYPR_MAIN"; then
     printf '\n-- omarchy-docker keybindings\nrequire("hypr.docker-bindings")\n' >> "$HYPR_MAIN"
     echo "  Wired keybindings into $HYPR_MAIN"

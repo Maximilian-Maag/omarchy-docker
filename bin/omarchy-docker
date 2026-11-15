@@ -22,6 +22,8 @@ Subcommands:
   exec NAME -- CMD    run a command inside a container
   theme               render the container view's colour roles from the applied
                       theme, to a file (``--stdout`` to print instead)
+  bindings            render the Hyprland keybinding module from the configured
+                      keybinding, to Hyprland's config dir (``--stdout`` to print)
 """
 
 from __future__ import annotations
@@ -44,6 +46,10 @@ DEFAULT_CONFIG = {
 
 DEFAULT_TIMEOUT = 30
 RESET = "\x1b[0m"
+
+# The shipped Lua keybinding module is a *template* carrying this placeholder,
+# substituted with the configured keybinding by :func:`render_bindings`.
+KEYBINDING_PLACEHOLDER = "__KEYBINDING__"
 
 
 # ── paths ─────────────────────────────────────────────────────────────────
@@ -103,6 +109,34 @@ def theme_path(cfg: dict | None = None) -> pathlib.Path:
     if raw.startswith("~") or raw.startswith("/"):
         return pathlib.Path(os.path.expanduser(raw))
     return config_home() / raw
+
+
+# ── keybinding rendering ──────────────────────────────────────────────────
+
+
+def bindings_template_path() -> pathlib.Path:
+    """The shipped Lua keybinding template this plugin renders."""
+    return plugin_dir() / "bin" / "bindings.lua"
+
+
+def bindings_path() -> pathlib.Path:
+    """Where the rendered keybinding module is installed (Hyprland's config dir)."""
+    return config_home() / "hypr" / "docker-bindings.lua"
+
+
+def render_bindings(cfg: dict | None = None) -> str:
+    """Render the Hyprland keybinding module from the configured keybinding.
+
+    ``config/docker.json``'s ``keybinding`` used to have no reader: the binding
+    lived hardcoded in ``bin/bindings.lua`` and install.sh copied it verbatim, so
+    editing the config did nothing. The shipped file is now a template carrying
+    :data:`KEYBINDING_PLACEHOLDER`, which this substitutes with the configured
+    (or default) binding.
+    """
+    cfg = cfg if cfg is not None else load_config()
+    keybinding = str(cfg.get("keybinding") or DEFAULT_CONFIG["keybinding"])
+    template = bindings_template_path().read_text()
+    return template.replace(KEYBINDING_PLACEHOLDER, keybinding)
 
 
 # ── theme parsing ─────────────────────────────────────────────────────────
@@ -396,6 +430,7 @@ def render_status(info: dict) -> str:
     lines.append("docker group  : %s" % ("gid %d" % gid if gid is not None else "not present"))
     lines.append("user groups   : %s" % ("member" if info.get("in_group") else "not a member"))
     lines.append("theme         : %s" % (info.get("theme") or "(unknown)"))
+    lines.append("keybinding    : %s" % (info.get("keybinding") or "(unset)"))
     if not info["reachable"] and not info.get("in_group"):
         lines.append("fix           : you cannot reach the daemon. Add yourself to the")
         lines.append("                docker group, then log out and back in:")
@@ -408,6 +443,7 @@ def render_status(info: dict) -> str:
 
 def cmd_status(args) -> int:
     runner = getattr(args, "runner", None)
+    cfg = load_config(getattr(args, "config", None))
     reachable, detail = daemon_reachable(runner)
     gid = lookup_docker_gid(runner)
     in_group = user_in_group(gid, current_group_ids())
@@ -416,7 +452,8 @@ def cmd_status(args) -> int:
     if colors_path.is_file():
         name = resolve_theme_name(parse_colors(colors_path.read_text()), theme_search_dirs())
     info = {"reachable": reachable, "detail": detail, "group_gid": gid,
-            "in_group": in_group, "theme": name}
+            "in_group": in_group, "theme": name,
+            "keybinding": cfg.get("keybinding") or DEFAULT_CONFIG["keybinding"]}
     print(render_status(info))
     return 0
 
@@ -520,6 +557,20 @@ def cmd_theme(args) -> int:
     return 0
 
 
+def cmd_bindings(args) -> int:
+    """Render the Hyprland keybinding module from the configured keybinding."""
+    cfg = load_config(args.config)
+    payload = render_bindings(cfg)
+    if args.stdout:
+        sys.stdout.write(payload)
+        return 0
+    out = bindings_path()
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(payload)
+    print("omarchy-docker: wrote %s" % out)
+    return 0
+
+
 # ── argument parsing ──────────────────────────────────────────────────────
 
 
@@ -561,6 +612,10 @@ def build_parser() -> argparse.ArgumentParser:
     theme = sub.add_parser("theme", help="render the container view's colour roles")
     theme.add_argument("--stdout", action="store_true", help="print instead of writing")
     theme.set_defaults(func=cmd_theme)
+
+    bnd = sub.add_parser("bindings", help="render the Hyprland keybinding module from the config")
+    bnd.add_argument("--stdout", action="store_true", help="print instead of writing")
+    bnd.set_defaults(func=cmd_bindings)
     return parser
 
 
