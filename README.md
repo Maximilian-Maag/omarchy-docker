@@ -11,7 +11,10 @@ opens the view in a floating terminal.
 - `status` tells you the truth about this machine: whether the daemon answers and
   whether you are in the `docker` group — and prints the exact fix when you are not.
 - A uniquely-named `theme-set` hook (`hooks/docker-theme-set`) regenerates the
-  colour roles whenever you change theme.
+  colour roles whenever you change theme. `theme` writes those roles to
+  `~/.config/docker/omarchy-docker-theme.json`, and `list` **reads that file** —
+  so the hook has a real effect (a theme change updates the view) rather than
+  regenerating something nothing consumes.
 
 Plugin id: `Maximilian-Maag.docker`.
 
@@ -49,8 +52,9 @@ omarchy-docker bindings        # render ~/.config/hypr/docker-bindings.lua from 
 ```
 
 `list` shows NAME, IMAGE, STATE and STATUS. Rows are painted with the theme colour
-that matches the container's state (running / stopped / other). The cap on rows is
-`max_rows` in `config/docker.json`.
+that matches the container's state (running / stopped / other). Colours come from
+the generated theme file if it exists, otherwise from the applied `colors.toml` read
+live. The cap on rows is `max_rows` in `config/docker.json`.
 
 ## Reaching the Docker daemon
 

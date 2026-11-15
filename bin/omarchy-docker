@@ -244,6 +244,42 @@ def build_theme(colors: dict) -> dict:
     }
 
 
+def load_generated_theme(cfg: dict | None = None) -> dict | None:
+    """The colour roles from the generated theme file, or ``None``.
+
+    ``theme`` writes this file and the ``theme-set`` hook regenerates it; reading
+    it back is what gives that artifact a *consumer* instead of writing a file
+    nothing reads. A missing, unreadable, non-object or empty file yields ``None``.
+    """
+    path = theme_path(cfg)
+    if not path.is_file():
+        return None
+    try:
+        data = json.loads(path.read_text())
+    except ValueError:
+        return None
+    if not isinstance(data, dict) or not data:
+        return None
+    return data
+
+
+def resolve_theme(cfg: dict | None = None) -> dict | None:
+    """The colour roles the container view renders with, or ``None``.
+
+    Preference order: the generated theme file (the artifact ``theme`` writes and
+    the ``theme-set`` hook regenerates, so a theme change updates the view without
+    re-parsing ``colors.toml``), then the applied ``colors.toml`` read live, then
+    ``None`` when no theme is available at all.
+    """
+    generated = load_generated_theme(cfg)
+    if generated is not None:
+        return generated
+    colors_path = theme_colors_path()
+    if colors_path.is_file():
+        return build_theme(parse_colors(colors_path.read_text()))
+    return None
+
+
 # ── the docker seam ───────────────────────────────────────────────────────
 
 
@@ -471,17 +507,16 @@ def cmd_list(args) -> int:
     if not containers:
         print("omarchy-docker: no containers")
         return 0
-    colors_path = theme_colors_path()
-    if colors_path.is_file():
-        theme = build_theme(parse_colors(colors_path.read_text()))
-        if args.no_color:
-            color = False
-        else:
-            color = sys.stdout.isatty()
-        sys.stdout.write(render_table(containers, theme, color=color))
-    else:
+    theme = resolve_theme(cfg)
+    if theme is None:
         print("omarchy-docker: no applied theme — listing without colour", file=sys.stderr)
         sys.stdout.write(render_table(containers, {}, color=False))
+        return 0
+    if args.no_color:
+        color = False
+    else:
+        color = sys.stdout.isatty()
+    sys.stdout.write(render_table(containers, theme, color=color))
     return 0
 
 

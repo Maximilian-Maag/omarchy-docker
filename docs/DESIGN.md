@@ -58,6 +58,16 @@ regression test asserts this by scanning the source for `#rrggbb` patterns.
 A Hyprland gradient stop such as `rgba(26a269ee)` is reduced to its `#rrggbb`
 before being turned into a 24-bit ANSI escape (true colour).
 
+### The generated theme file has a reader
+
+`theme` writes `build_theme()`'s roles to
+`~/.config/docker/omarchy-docker-theme.json`, and the `theme-set` hook regenerates
+that file on every theme change. `resolve_theme()` is the *consumer*: the container
+view reads the generated file first and only falls back to parsing `colors.toml`
+live when it is absent. Wiring the consumer (rather than deleting the artifact) is
+the smaller change that keeps the hook observable — its regeneration changes what
+`list` paints — and keeps the `shell` test kind's hook subject meaningful.
+
 ## Docker group honesty
 
 `user_in_group(gid, gids)` compares the *actual* gid of the `docker` group against

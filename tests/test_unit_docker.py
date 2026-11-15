@@ -659,6 +659,68 @@ class RenderBindings(unittest.TestCase):
                 os.environ["XDG_CONFIG_HOME"] = old
 
 
+class GeneratedThemeConsumer(unittest.TestCase):
+    """The theme file `theme` writes (and the hook regenerates) must be READ."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.base = pathlib.Path(self.tmp.name)
+        self._env = {k: os.environ.get(k) for k in ("XDG_STATE_HOME", "XDG_CONFIG_HOME")}
+        self.addCleanup(self._restore)
+        os.environ["XDG_STATE_HOME"] = str(self.base / "state")
+        os.environ["XDG_CONFIG_HOME"] = str(self.base / "config")
+
+    def _restore(self):
+        for k, v in self._env.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+
+    def _apply_colors(self, body=SAMPLE):
+        theme = self.base / "state/omarchy/current/theme"
+        theme.mkdir(parents=True, exist_ok=True)
+        (theme / "colors.toml").write_text(body)
+
+    def _write_generated(self, text):
+        path = self.base / "config/docker/omarchy-docker-theme.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text)
+
+    def test_generated_theme_file_is_read(self):
+        self._write_generated(json.dumps({"accent": "#123456"}))
+        self.assertEqual(dock.load_generated_theme({}), {"accent": "#123456"})
+
+    def test_absent_generated_file_is_none(self):
+        self.assertIsNone(dock.load_generated_theme({}))
+
+    def test_malformed_generated_file_is_none(self):
+        self._write_generated("{ not json")
+        self.assertIsNone(dock.load_generated_theme({}))
+
+    def test_non_object_generated_file_is_none(self):
+        self._write_generated("[1, 2, 3]")
+        self.assertIsNone(dock.load_generated_theme({}))
+
+    def test_empty_generated_object_is_none(self):
+        self._write_generated("{}")
+        self.assertIsNone(dock.load_generated_theme({}))
+
+    def test_resolve_theme_prefers_the_generated_file(self):
+        self._apply_colors()
+        self._write_generated(json.dumps({"accent": "#abcdef", "running": "#00ff00",
+                                          "stopped": "#ff0000", "muted": "#888888"}))
+        self.assertEqual(dock.resolve_theme({})["accent"], "#abcdef")
+
+    def test_resolve_theme_falls_back_to_colors_toml(self):
+        self._apply_colors()
+        self.assertEqual(dock.resolve_theme({})["accent"], "#82FB9C")
+
+    def test_resolve_theme_none_without_either(self):
+        self.assertIsNone(dock.resolve_theme({}))
+
+
 class Commands(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -854,6 +916,24 @@ class Commands(unittest.TestCase):
         rc, out = run_main(["status"], self._runner())
         self.assertEqual(rc, 0)
         self.assertIn(dock.DEFAULT_CONFIG["keybinding"], out)
+
+    def test_list_consumes_the_generated_theme_file(self):
+        # `theme` writes the artifact; with colors.toml gone, list must still
+        # render from it rather than reporting "no applied theme".
+        run_main(["theme"], self._runner())
+        (self.state / "omarchy/current/theme/colors.toml").unlink()
+        runner = FakeRunner().on("docker ps", 0, PS_JSON)
+        rc, out = run_main(["list"], runner)
+        self.assertEqual(rc, 0)
+        self.assertIn("web", out)
+        self.assertNotIn("no applied theme", out)
+
+    def test_list_without_any_theme_warns(self):
+        (self.state / "omarchy/current/theme/colors.toml").unlink()
+        runner = FakeRunner().on("docker ps", 0, PS_JSON)
+        rc, out = run_main(["list"], runner)
+        self.assertEqual(rc, 0)
+        self.assertIn("no applied theme", out)
 
 
 if __name__ == "__main__":
