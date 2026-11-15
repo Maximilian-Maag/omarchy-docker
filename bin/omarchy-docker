@@ -689,9 +689,13 @@ def cmd_theme(args) -> int:
 
 
 def cmd_bindings(args) -> int:
-    """Render the Hyprland keybinding module from the configured keybinding."""
+    """Render the Hyprland keybinding module and wire it into hyprland.lua."""
     cfg = load_config(args.config)
-    payload = render_bindings(cfg)
+    try:
+        payload = render_bindings(cfg)
+    except ValueError as exc:
+        print("omarchy-docker: %s" % exc, file=sys.stderr)
+        return 1
     if args.stdout:
         sys.stdout.write(payload)
         return 0
@@ -699,6 +703,17 @@ def cmd_bindings(args) -> int:
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(payload)
     print("omarchy-docker: wrote %s" % out)
+    require = 'require("hypr.docker-bindings")'
+    main = config_home() / "hypr" / "hyprland.lua"
+    if main.is_file():
+        if require in main.read_text():
+            print("omarchy-docker: keybindings already wired")
+        else:
+            with main.open("a") as fh:
+                fh.write("\n-- omarchy-docker keybindings\n" + require + "\n")
+            print("omarchy-docker: wired %s into %s" % (require, main))
+    else:
+        print("omarchy-docker: %s not found — add %s" % (main, require))
     return 0
 
 

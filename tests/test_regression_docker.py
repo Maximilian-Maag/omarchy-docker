@@ -5,6 +5,8 @@ Each test fails if the guard is removed, and names the hazard it pins.
 
 import importlib.machinery
 import importlib.util
+import contextlib
+import io
 import json
 import os
 import pathlib
@@ -330,6 +332,67 @@ class MalformedThemeIsDiagnosed(unittest.TestCase):
             dock.default_runner = real
         self.assertEqual(rc, 0)
         self.assertIn("web", out.getvalue())
+
+
+class BindingsCommandWiresHyprland(unittest.TestCase):
+    """HAZARD: cmd_bindings wrote the module but never appended
+    require("hypr.docker-bindings") to hyprland.lua, unlike the tmux/mpv siblings,
+    so a fresh install left the binding unwired.
+    """
+
+    def setUp(self):
+        self._config = tempfile.TemporaryDirectory()
+        self.addCleanup(self._config.cleanup)
+        self._old_config = os.environ.get("XDG_CONFIG_HOME")
+        os.environ["XDG_CONFIG_HOME"] = self._config.name
+        self.addCleanup(self._restore_config)
+        self.hypr = pathlib.Path(self._config.name) / "hypr"
+        self.hypr.mkdir(parents=True, exist_ok=True)
+
+    def _restore_config(self):
+        if self._old_config is None:
+            os.environ.pop("XDG_CONFIG_HOME", None)
+        else:
+            os.environ["XDG_CONFIG_HOME"] = self._old_config
+
+    def test_bindings_wires_the_require_line(self):
+        (self.hypr / "hyprland.lua").write_text("-- main\n")
+        with contextlib.redirect_stdout(io.StringIO()):
+            rc = dock.main(["bindings"])
+        self.assertEqual(rc, 0)
+        main = (self.hypr / "hyprland.lua").read_text()
+        self.assertIn('require("hypr.docker-bindings")', main)
+        self.assertTrue((self.hypr / "docker-bindings.lua").is_file())
+
+    def test_wiring_is_idempotent(self):
+        (self.hypr / "hyprland.lua").write_text("-- main\n")
+        for _ in range(2):
+            with contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(dock.main(["bindings"]), 0)
+        main = (self.hypr / "hyprland.lua").read_text()
+        self.assertEqual(main.count('require("hypr.docker-bindings")'), 1)
+
+    def test_no_hyprland_lua_is_not_fatal(self):
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(dock.main(["bindings"]), 0)
+        self.assertTrue((self.hypr / "docker-bindings.lua").is_file())
+
+    def test_stdout_does_not_wire(self):
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(dock.main(["bindings", "--stdout"]), 0)
+        self.assertFalse((self.hypr / "docker-bindings.lua").exists())
+
+    def test_hostile_keybinding_refuses_without_writing(self):
+        (self.hypr / "hyprland.lua").write_text("-- main\n")
+        with tempfile.NamedTemporaryFile("w", suffix=".json") as fh:
+            fh.write(json.dumps({"keybinding": 'D", evil()\n--'}))
+            fh.flush()
+            err = io.StringIO()
+            with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(err):
+                rc = dock.main(["--config", fh.name, "bindings"])
+        self.assertEqual(rc, 1)
+        self.assertFalse((self.hypr / "docker-bindings.lua").exists())
+        self.assertNotIn('require("hypr.docker-bindings")', (self.hypr / "hyprland.lua").read_text())
 
 
 class LiveThemeNameIsAuthoritative(unittest.TestCase):
