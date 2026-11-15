@@ -458,11 +458,30 @@ def container_name(container: dict) -> str:
     return str(container.get("Names") or container.get("Name") or "")
 
 
+def coerce_max_rows(value) -> int | None:
+    """Coerce a configured ``max_rows`` to a positive integer cap, or ``None``.
+
+    ``list`` used to slice ``containers[:max_rows]`` with the raw config value,
+    so a non-integer (e.g. ``"forty"``) raised an uncaught ``TypeError``. An
+    absent, unparseable or non-positive value means "no cap".
+    """
+    if value is None:
+        return None
+    try:
+        rows = int(value)
+    except (TypeError, ValueError):
+        return None
+    if rows <= 0:
+        return None
+    return rows
+
+
 def visible_rows(containers: list[dict], max_rows) -> list[dict]:
-    """Truncate a listing to ``max_rows`` when a truthy cap is configured."""
-    if not max_rows:
+    """Truncate a listing to ``max_rows`` when a usable positive cap is set."""
+    cap = coerce_max_rows(max_rows)
+    if cap is None:
         return containers
-    return containers[:max_rows]
+    return containers[:cap]
 
 
 # ── rendering ─────────────────────────────────────────────────────────────
@@ -560,7 +579,13 @@ def cmd_list(args) -> int:
               % ((err.strip() or out.strip() or "daemon unreachable").splitlines()[-1]),
               file=sys.stderr)
         return 1
-    containers = visible_rows(parse_ps(out), cfg.get("max_rows"))
+    containers = parse_ps(out)
+    raw_max = cfg.get("max_rows")
+    cap = coerce_max_rows(raw_max)
+    if raw_max is not None and cap is None:
+        print("omarchy-docker: ignoring invalid max_rows %r (expected a positive integer)"
+              % raw_max, file=sys.stderr)
+    containers = visible_rows(containers, cap)
     if not containers:
         print("omarchy-docker: no containers")
         return 0

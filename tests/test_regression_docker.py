@@ -202,6 +202,73 @@ class KeybindingCannotInjectLua(unittest.TestCase):
         self.assertNotIn(dock.KEYBINDING_PLACEHOLDER, rendered)
 
 
+class InvalidMaxRowsIsIgnored(unittest.TestCase):
+    """HAZARD: `list` sliced containers[:max_rows] with the raw config value, so a
+    non-integer max_rows raised an uncaught TypeError. It must be coerced or
+    ignored with a clear message, never crash.
+    """
+
+    def test_bad_values_coerce_to_none(self):
+        for value in ("forty", "4o", [], {}, "3.5", "", None):
+            self.assertIsNone(dock.coerce_max_rows(value))
+
+    def test_non_positive_coerces_to_none(self):
+        for value in (0, -1, "0"):
+            self.assertIsNone(dock.coerce_max_rows(value))
+
+    def test_good_values_preserved(self):
+        self.assertEqual(dock.coerce_max_rows(1), 1)
+        self.assertEqual(dock.coerce_max_rows(5), 5)
+        self.assertEqual(dock.coerce_max_rows("7"), 7)
+
+    def test_visible_rows_never_raises_on_a_string_cap(self):
+        containers = list(range(10))
+        self.assertEqual(dock.visible_rows(containers, "nonsense"), containers)
+        self.assertEqual(len(dock.visible_rows(containers, 3)), 3)
+
+    def test_list_survives_a_non_integer_max_rows(self):
+        import contextlib
+        import io
+        containers = [{"Names": "web", "Image": "nginx", "State": "running", "Status": "Up"}]
+        ps = "\n".join(json.dumps(c) for c in containers)
+        real = dock.default_runner
+        dock.default_runner = lambda argv: (0, ps, "")
+        try:
+            with tempfile.NamedTemporaryFile("w", suffix=".json") as fh:
+                fh.write(json.dumps({"max_rows": "forty"}))
+                fh.flush()
+                err = io.StringIO()
+                with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(err):
+                    rc = dock.main(["--config", fh.name, "list"])
+        finally:
+            dock.default_runner = real
+        self.assertEqual(rc, 0)
+        self.assertIn("max_rows", err.getvalue())
+
+    def test_list_accepts_a_valid_integer_cap(self):
+        import contextlib
+        import io
+        containers = [{"Names": "c%d" % i, "Image": "x", "State": "running", "Status": "Up"}
+                      for i in range(5)]
+        ps = "\n".join(json.dumps(c) for c in containers)
+        real = dock.default_runner
+        dock.default_runner = lambda argv: (0, ps, "")
+        try:
+            with tempfile.NamedTemporaryFile("w", suffix=".json") as fh:
+                fh.write(json.dumps({"max_rows": 2}))
+                fh.flush()
+                err = io.StringIO()
+                out = io.StringIO()
+                with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                    rc = dock.main(["--config", fh.name, "list"])
+        finally:
+            dock.default_runner = real
+        self.assertEqual(rc, 0)
+        self.assertNotIn("max_rows", err.getvalue())
+        self.assertIn("c0", out.getvalue())
+        self.assertNotIn("c2", out.getvalue())
+
+
 class LiveThemeNameIsAuthoritative(unittest.TestCase):
     """HAZARD: recovering the applied theme's name by colour equality alone left a
     NON-catalogued theme nameless ('(unknown)'), because the applied colours match
