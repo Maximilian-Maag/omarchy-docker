@@ -333,7 +333,14 @@ def resolve_theme(cfg: dict | None = None) -> dict | None:
         return generated
     colors_path = theme_colors_path()
     if colors_path.is_file():
-        return build_theme(parse_colors(colors_path.read_text()))
+        try:
+            return build_theme(parse_colors(colors_path.read_text()))
+        except ValueError as exc:
+            # A colors.toml missing a required key (or carrying an unparseable
+            # colour) must not abort `list` with a traceback; fall back to no
+            # colour and say why.
+            print("omarchy-docker: applied theme is malformed: %s" % exc, file=sys.stderr)
+            return None
     return None
 
 
@@ -660,7 +667,14 @@ def cmd_theme(args) -> int:
         print("omarchy-docker: no applied theme at %s" % colors_path, file=sys.stderr)
         return 1
     colors = parse_colors(colors_path.read_text())
-    payload = json.dumps(build_theme(colors), indent=2) + "\n"
+    try:
+        theme = build_theme(colors)
+    except ValueError as exc:
+        # A colors.toml missing a required key must not abort with a raw
+        # traceback; print this plugin's own diagnostic and fail cleanly.
+        print("omarchy-docker: applied theme is malformed: %s" % exc, file=sys.stderr)
+        return 1
+    payload = json.dumps(theme, indent=2) + "\n"
     if args.stdout:
         sys.stdout.write(payload)
         return 0

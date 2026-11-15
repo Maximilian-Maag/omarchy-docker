@@ -269,6 +269,69 @@ class InvalidMaxRowsIsIgnored(unittest.TestCase):
         self.assertNotIn("c2", out.getvalue())
 
 
+class MalformedThemeIsDiagnosed(unittest.TestCase):
+    """HAZARD: build_theme raises ValueError on a colors.toml missing a required
+    key, and neither cmd_theme nor resolve_theme caught it — so `theme` aborted
+    with a raw traceback instead of the plugin's own diagnostic.
+    """
+
+    def setUp(self):
+        self._state = tempfile.TemporaryDirectory()
+        self.addCleanup(self._state.cleanup)
+        self._old_state = os.environ.get("XDG_STATE_HOME")
+        self._old_config = os.environ.get("XDG_CONFIG_HOME")
+        # Isolate BOTH roots: without XDG_CONFIG_HOME the generated-theme file
+        # would be read from the real home and mask the malformed colors.toml.
+        os.environ["XDG_STATE_HOME"] = self._state.name
+        os.environ["XDG_CONFIG_HOME"] = self._state.name
+        self.addCleanup(self._restore_state)
+        theme_dir = pathlib.Path(self._state.name) / "omarchy/current/theme"
+        theme_dir.mkdir(parents=True, exist_ok=True)
+        # Every colour absent: build_theme cannot succeed.
+        (theme_dir / "colors.toml").write_text('mode = "dark"\n')
+
+    def _restore_state(self):
+        if self._old_state is None:
+            os.environ.pop("XDG_STATE_HOME", None)
+        else:
+            os.environ["XDG_STATE_HOME"] = self._old_state
+        if self._old_config is None:
+            os.environ.pop("XDG_CONFIG_HOME", None)
+        else:
+            os.environ["XDG_CONFIG_HOME"] = self._old_config
+
+    def test_theme_prints_a_diagnostic_and_returns_1(self):
+        import contextlib
+        import io
+        err = io.StringIO()
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(err):
+            rc = dock.main(["theme", "--stdout"])
+        self.assertEqual(rc, 1)
+        self.assertIn("omarchy-docker:", err.getvalue())
+        self.assertNotIn("Traceback", err.getvalue())
+
+    def test_resolve_theme_returns_none_instead_of_raising(self):
+        import contextlib
+        import io
+        with contextlib.redirect_stderr(io.StringIO()):
+            self.assertIsNone(dock.resolve_theme({}))
+
+    def test_list_still_renders_without_colour(self):
+        import contextlib
+        import io
+        ps = json.dumps({"Names": "web", "Image": "nginx", "State": "running", "Status": "Up"})
+        real = dock.default_runner
+        dock.default_runner = lambda argv: (0, ps, "")
+        try:
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
+                rc = dock.main(["list"])
+        finally:
+            dock.default_runner = real
+        self.assertEqual(rc, 0)
+        self.assertIn("web", out.getvalue())
+
+
 class LiveThemeNameIsAuthoritative(unittest.TestCase):
     """HAZARD: recovering the applied theme's name by colour equality alone left a
     NON-catalogued theme nameless ('(unknown)'), because the applied colours match
