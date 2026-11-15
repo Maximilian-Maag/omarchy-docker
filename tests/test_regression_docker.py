@@ -164,6 +164,44 @@ class KeybindingRenderedFromConfig(unittest.TestCase):
         self.assertIn(dock.DEFAULT_CONFIG["keybinding"], dock.render_bindings({}))
 
 
+class KeybindingCannotInjectLua(unittest.TestCase):
+    """HAZARD: the configured keybinding is substituted into a double-quoted Lua
+    string literal in bin/bindings.lua. A value carrying a quote, backslash or
+    newline would close the literal and inject Lua the compositor then executes.
+    It must be refused, not rendered.
+    """
+
+    HOSTILE = [
+        'D", dofile("/etc/passwd")\n--',
+        "SUPER + \\ + D",
+        "SUPER + D\nmalicious()",
+        "SUPER + ' + D",
+    ]
+
+    def test_hostile_keybinding_is_refused(self):
+        for value in self.HOSTILE:
+            with self.assertRaises(ValueError):
+                dock.render_bindings({"keybinding": value})
+
+    def test_validate_keybinding_is_the_guard(self):
+        for value in self.HOSTILE:
+            with self.assertRaises(ValueError):
+                dock.validate_keybinding(value)
+
+    def test_hostile_value_never_reaches_the_module(self):
+        for value in self.HOSTILE:
+            try:
+                rendered = dock.render_bindings({"keybinding": value})
+            except ValueError:
+                continue
+            self.fail("hostile keybinding was rendered: %r" % rendered)
+
+    def test_clean_keybinding_still_renders(self):
+        rendered = dock.render_bindings({"keybinding": "SUPER + SHIFT + D"})
+        self.assertIn('o.bind("SUPER + SHIFT + D"', rendered)
+        self.assertNotIn(dock.KEYBINDING_PLACEHOLDER, rendered)
+
+
 class LiveThemeNameIsAuthoritative(unittest.TestCase):
     """HAZARD: recovering the applied theme's name by colour equality alone left a
     NON-catalogued theme nameless ('(unknown)'), because the applied colours match

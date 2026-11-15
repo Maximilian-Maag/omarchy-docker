@@ -124,6 +124,35 @@ def bindings_path() -> pathlib.Path:
     return config_home() / "hypr" / "docker-bindings.lua"
 
 
+def unsafe_keybinding_reason(value: str) -> str | None:
+    """Why ``value`` cannot be embedded in a double-quoted Lua string, or None.
+
+    The configured keybinding is substituted into ``bin/bindings.lua`` inside a
+    ``"..."`` literal, so a quote, backslash or newline would close the literal
+    early and inject Lua that Hyprland then executes. Such a value is rejected
+    rather than silently mangled.
+    """
+    for bad, what in (('"', "a double quote"), ("'", "a single quote"),
+                      ("\\", "a backslash"), ("\n", "a newline"), ("\r", "a carriage return")):
+        if bad in value:
+            return what
+    return None
+
+
+def validate_keybinding(value: str) -> str:
+    """Return ``value`` if it is a safe Hyprland chord, else raise ``ValueError``.
+
+    Fails loudly: an injection that reached the rendered module would run inside
+    the compositor's Lua interpreter, which is far worse than a refused install.
+    """
+    reason = unsafe_keybinding_reason(value)
+    if reason:
+        raise ValueError(
+            "unsafe keybinding %r contains %s; quotes, backslashes and newlines "
+            "are not allowed" % (value, reason))
+    return value
+
+
 def render_bindings(cfg: dict | None = None) -> str:
     """Render the Hyprland keybinding module from the configured keybinding.
 
@@ -131,10 +160,11 @@ def render_bindings(cfg: dict | None = None) -> str:
     lived hardcoded in ``bin/bindings.lua`` and install.sh copied it verbatim, so
     editing the config did nothing. The shipped file is now a template carrying
     :data:`KEYBINDING_PLACEHOLDER`, which this substitutes with the configured
-    (or default) binding.
+    (or default) binding — after :func:`validate_keybinding` proves it cannot
+    break out of the Lua string literal.
     """
     cfg = cfg if cfg is not None else load_config()
-    keybinding = str(cfg.get("keybinding") or DEFAULT_CONFIG["keybinding"])
+    keybinding = validate_keybinding(str(cfg.get("keybinding") or DEFAULT_CONFIG["keybinding"]))
     template = bindings_template_path().read_text()
     return template.replace(KEYBINDING_PLACEHOLDER, keybinding)
 
