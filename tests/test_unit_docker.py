@@ -183,6 +183,26 @@ class NormalizeName(unittest.TestCase):
 
 
 class ResolveThemeName(unittest.TestCase):
+    def setUp(self):
+        # Isolate XDG_STATE_HOME: Omarchy's live current/theme.name is authoritative
+        # and would otherwise leak the real machine's theme into a colour-match test.
+        self._state = tempfile.TemporaryDirectory()
+        self.addCleanup(self._state.cleanup)
+        self._old_state = os.environ.get("XDG_STATE_HOME")
+        os.environ["XDG_STATE_HOME"] = self._state.name
+        self.addCleanup(self._restore_state)
+
+    def _restore_state(self):
+        if self._old_state is None:
+            os.environ.pop("XDG_STATE_HOME", None)
+        else:
+            os.environ["XDG_STATE_HOME"] = self._old_state
+
+    def _write_name(self, text):
+        namedir = pathlib.Path(self._state.name) / "omarchy/current"
+        namedir.mkdir(parents=True, exist_ok=True)
+        (namedir / "theme.name").write_text(text)
+
     def _theme(self, root, name, body):
         d = root / name
         d.mkdir()
@@ -198,6 +218,15 @@ class ResolveThemeName(unittest.TestCase):
             self.assertEqual(
                 dock.resolve_theme_name(colors, [root / "nord", root / "gruvbox"]), "gruvbox")
 
+    def test_live_name_wins_over_a_colour_match(self):
+        with tempfile.TemporaryDirectory() as t:
+            root = pathlib.Path(t)
+            self._theme(root, "nord", 'accent = "#88c0d0"\nbackground = "#2e3440"\n')
+            self._write_name("my-custom-theme\n")
+            self.assertEqual(
+                dock.resolve_theme_name({"accent": "#88c0d0", "background": "#2e3440"},
+                                        [root / "nord"]), "my-custom-theme")
+
     def test_no_match_returns_empty(self):
         with tempfile.TemporaryDirectory() as t:
             root = pathlib.Path(t)
@@ -209,6 +238,41 @@ class ResolveThemeName(unittest.TestCase):
             root = pathlib.Path(t)
             (root / "empty").mkdir()
             self.assertEqual(dock.resolve_theme_name({"a": "b"}, [root / "empty"]), "")
+
+
+class OmarchyThemeName(unittest.TestCase):
+    def setUp(self):
+        self._state = tempfile.TemporaryDirectory()
+        self.addCleanup(self._state.cleanup)
+        self._old_state = os.environ.get("XDG_STATE_HOME")
+        os.environ["XDG_STATE_HOME"] = self._state.name
+        self.addCleanup(self._restore_state)
+
+    def _restore_state(self):
+        if self._old_state is None:
+            os.environ.pop("XDG_STATE_HOME", None)
+        else:
+            os.environ["XDG_STATE_HOME"] = self._old_state
+
+    def _write_name(self, text):
+        namedir = pathlib.Path(self._state.name) / "omarchy/current"
+        namedir.mkdir(parents=True, exist_ok=True)
+        (namedir / "theme.name").write_text(text)
+
+    def test_reads_the_live_name(self):
+        self._write_name("hackerman\n")
+        self.assertEqual(dock.omarchy_theme_name(), "hackerman")
+
+    def test_normalises_title_case_and_spaces(self):
+        self._write_name("Yellow On Black\n")
+        self.assertEqual(dock.omarchy_theme_name(), "yellow-on-black")
+
+    def test_absent_name_file_is_empty(self):
+        self.assertEqual(dock.omarchy_theme_name(), "")
+
+    def test_theme_name_path_is_under_state_home(self):
+        self.assertEqual(dock.theme_name_path(),
+                         pathlib.Path(self._state.name) / "omarchy/current/theme.name")
 
 
 class FirstAndBuildTheme(unittest.TestCase):

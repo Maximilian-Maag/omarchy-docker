@@ -6,8 +6,10 @@ Each test fails if the guard is removed, and names the hazard it pins.
 import importlib.machinery
 import importlib.util
 import json
+import os
 import pathlib
 import re
+import tempfile
 import unittest
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
@@ -160,6 +162,54 @@ class KeybindingRenderedFromConfig(unittest.TestCase):
 
     def test_default_keybinding_is_used_without_config(self):
         self.assertIn(dock.DEFAULT_CONFIG["keybinding"], dock.render_bindings({}))
+
+
+class LiveThemeNameIsAuthoritative(unittest.TestCase):
+    """HAZARD: recovering the applied theme's name by colour equality alone left a
+    NON-catalogued theme nameless ('(unknown)'), because the applied colours match
+    no installed theme. Omarchy's live ``current/theme.name`` is authoritative and
+    must win; the colour match is only a fallback.
+    """
+
+    def setUp(self):
+        self._state = tempfile.TemporaryDirectory()
+        self.addCleanup(self._state.cleanup)
+        self._old_state = os.environ.get("XDG_STATE_HOME")
+        os.environ["XDG_STATE_HOME"] = self._state.name
+        self.addCleanup(self._restore_state)
+
+    def _restore_state(self):
+        if self._old_state is None:
+            os.environ.pop("XDG_STATE_HOME", None)
+        else:
+            os.environ["XDG_STATE_HOME"] = self._old_state
+
+    def _write_name(self, text):
+        namedir = pathlib.Path(self._state.name) / "omarchy/current"
+        namedir.mkdir(parents=True, exist_ok=True)
+        (namedir / "theme.name").write_text(text)
+
+    def test_name_file_matching_no_installed_theme_resolves_to_that_name(self):
+        self._write_name("yellow-on-black\n")
+        with tempfile.TemporaryDirectory() as t:
+            root = pathlib.Path(t)
+            (root / "nord").mkdir()
+            (root / "nord/colors.toml").write_text('accent = "#88c0d0"\n')
+            self.assertEqual(
+                dock.resolve_theme_name({"accent": "#000000"}, [root / "nord"]),
+                "yellow-on-black")
+
+    def test_without_a_name_file_the_colour_match_is_used(self):
+        with tempfile.TemporaryDirectory() as t:
+            root = pathlib.Path(t)
+            (root / "nord").mkdir()
+            (root / "nord/colors.toml").write_text('accent = "#88c0d0"\n')
+            self.assertEqual(
+                dock.resolve_theme_name({"accent": "#88c0d0"}, [root / "nord"]), "nord")
+
+    def test_omarchy_theme_name_normalises_spaced_title_case(self):
+        self._write_name("Tokyo Night\n")
+        self.assertEqual(dock.omarchy_theme_name(), "tokyo-night")
 
 
 class DedicatedThemePath(unittest.TestCase):

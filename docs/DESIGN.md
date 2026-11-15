@@ -38,10 +38,14 @@ through the same seam, so a fake `getent` can be injected for deterministic test
 
 The applied theme is a *copy* at
 `~/.local/state/omarchy/current/theme/colors.toml`; its directory is always
-literally `theme`, so the theme's name is not in the path. `status` recovers the
-name by matching the colour set against every installed theme directory, rather
-than assuming a default. The CLI carries **no hex literal of its own** — a
-regression test asserts this by scanning the source for `#rrggbb` patterns.
+literally `theme`, so the theme's name is not in the path. `resolve_theme_name()`
+consults Omarchy's **authoritative live name** first — `omarchy-theme-set` writes
+the applied slug to `~/.local/state/omarchy/current/theme.name` on every theme
+change — and only falls back to matching the colour set against the installed theme
+directories. A non-catalogued theme (one the user wrote) is therefore named from the
+live file instead of showing `(unknown)`. The CLI carries **no hex literal of its
+own** — a regression test asserts this by scanning the source for `#rrggbb`
+patterns.
 
 `build_theme()` maps Omarchy colour keys to the container view's roles:
 

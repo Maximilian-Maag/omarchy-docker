@@ -204,13 +204,40 @@ def normalize_name(name: str) -> str:
     return name.strip().lower().replace(" ", "-")
 
 
-def resolve_theme_name(colors: dict, search_dirs: list[pathlib.Path]) -> str:
-    """Recover the applied theme's name by matching colours against the themes.
+def theme_name_path() -> pathlib.Path:
+    """Omarchy's authoritative record of the applied theme's name.
 
-    The applied theme is a *copy*, so its directory is always literally
-    ``theme`` and the name is nowhere in the path. Match the colour set against
-    each installed theme instead.
+    ``omarchy-theme-set`` writes the applied theme's slug here on every theme
+    change, independently of this plugin's hook.
     """
+    return state_home() / "omarchy" / "current" / "theme.name"
+
+
+def omarchy_theme_name() -> str:
+    """Omarchy's own record of the applied theme's slug, or ``""``.
+
+    Authoritative and always current (written by ``omarchy-theme-set`` on every
+    theme change). Normalised to the same lower-dashed form as a theme directory
+    name. An unreadable or absent file yields ``""``.
+    """
+    try:
+        raw = theme_name_path().read_text()
+    except OSError:
+        return ""
+    return normalize_name(raw)
+
+
+def resolve_theme_name(colors: dict, search_dirs: list[pathlib.Path]) -> str:
+    """Recover the applied theme's name, most-authoritative source first.
+
+    Omarchy's live ``current/theme.name`` wins, because the applied theme is a
+    *copy* — its directory is always literally ``theme`` and the name is nowhere
+    in the path, and a non-catalogued theme matches no installed theme. The colour
+    match against the installed themes is only a fallback.
+    """
+    live = omarchy_theme_name()
+    if live:
+        return live
     for directory in search_dirs:
         candidate = directory / "colors.toml"
         if not candidate.is_file():
