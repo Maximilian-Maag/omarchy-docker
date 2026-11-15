@@ -3,6 +3,23 @@
 All notable changes to omarchy-docker are documented here. The newest heading must
 equal `version` in `manifest.json` (enforced by the policy check).
 
+## [0.2.0] - 2026-11-15
+
+### Added
+
+- `./install.sh --uninstall` — reverses exactly what the installer added: the
+  `/usr/local/bin` symlink (only if it points back into this checkout), the rendered
+  keybinding module and its `require` block in `hyprland.lua`, and the theme-set
+  hook. The user's own config values and the generated theme file (which the
+  theme-set hook regenerates) are left untouched, and a require line with no
+  `-- omarchy-docker keybindings` marker above it — added by hand — survives.
+- `OMARCHY_DOCKER_BIN` — overrides where the CLI is symlinked (default
+  `/usr/local/bin`), so an install without root and the shell tests use a private
+  bin dir.
+- A shell round-trip test asserting that an install → uninstall cycle leaves the
+  user's `hyprland.lua` byte-identical (sha256) and leaves no marker or blank line
+  behind.
+
 ## [0.1.0] - 2026-10-12
 
 ### Added

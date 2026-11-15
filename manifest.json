@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "Maximilian-Maag.docker",
   "name": "Docker",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "author": "Maximilian-Maag",
   "license": "MIT",
   "description": "Integrates Docker with the Omarchy desktop: a themed container view (list), lifecycle commands (start/stop/restart), logs and exec, a daemon/group status check, and a Hyprland keybinding that opens the view in a floating terminal. Colours are read live from the applied theme.",

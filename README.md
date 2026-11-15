@@ -36,6 +36,12 @@ omarchy plugin add <repo-url> --yes
 installs the hook and wires the keybinding into `hyprland.lua`. It **never**
 changes your group membership — it only reports if you need to.
 
+To reverse it, `./install.sh --uninstall` removes exactly what the installer
+added — the `/usr/local/bin` symlink (only if it points back into this checkout),
+the rendered keybinding module and its `require` block, and the theme-set hook —
+and leaves your own config values and the generated theme file alone. Set
+`OMARCHY_DOCKER_BIN` (default `/usr/local/bin`) to symlink somewhere else.
+
 ## Usage
 
 ```bash
